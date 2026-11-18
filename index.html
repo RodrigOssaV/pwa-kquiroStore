@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="es-CL">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>KQuiro Scanner</title>
+  <meta name="description" content="Registro de productos por código de barras para KQuiro. Funciona sin internet.">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#0b3d91" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0d1117" media="(prefers-color-scheme: dark)">
+
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="icon" href="icons/icon-192.png" type="image/png" sizes="192x192">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="KQuiro Scanner">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+
+  <link rel="stylesheet" href="css/styles.css">
+
+  <!-- Librerías con versión fija. El service worker las guarda en caché para uso sin internet. -->
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js" defer></script>
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js" defer></script>
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <h1 class="topbar__title">KQuiro Scanner</h1>
+    <span class="topbar__status" id="offline-badge" hidden>Sin conexión</span>
+  </header>
+
+  <main id="main">
+    <!-- ============ LISTA ============ -->
+    <section class="view" id="view-lista" data-view="lista" aria-labelledby="t-lista">
+      <h2 class="sr-only" id="t-lista">Lista actual</h2>
+
+      <div class="banner banner--warn" id="unexported-banner" hidden>
+        <span id="unexported-text"></span>
+        <button class="btn btn--small" type="button" data-action="export">Exportar</button>
+      </div>
+
+      <div class="stats" aria-label="Totales">
+        <div class="stat"><span class="stat__value" id="stat-distinct">0</span><span class="stat__label">Productos</span></div>
+        <div class="stat"><span class="stat__value" id="stat-units">0</span><span class="stat__label">Unidades</span></div>
+        <div class="stat stat--wide"><span class="stat__value" id="stat-value">$0</span><span class="stat__label">Valor total</span></div>
+      </div>
+
+      <label class="search">
+        <span class="sr-only">Buscar en la lista</span>
+        <input type="search" id="list-search" placeholder="Buscar por nombre o código" autocomplete="off" enterkeyhint="search">
+      </label>
+
+      <ul class="cards" id="list-items" aria-live="polite"></ul>
+      <p class="empty" id="list-empty">
+        Aún no hay productos.<br>Toca <strong>Escanear</strong> para empezar.
+      </p>
+
+      <div class="fab-row">
+        <button class="btn btn--primary btn--xl" type="button" data-action="scan-now">
+          <svg aria-hidden="true" viewBox="0 0 24 24" class="ico"><path d="M3 7V4h3M21 7V4h-3M3 17v3h3M21 17v3h-3M7 8v8M10 8v8M13 8v8M16 8v8"/></svg>
+          Escanear
+        </button>
+      </div>
+    </section>
+
+    <!-- ============ ESCANEAR / FICHA ============ -->
+    <section class="view" id="view-escanear" data-view="escanear" aria-labelledby="t-escanear" hidden>
+      <h2 class="sr-only" id="t-escanear">Escanear</h2>
+
+      <!-- Estado: reposo -->
+      <div class="scan-panel" id="scan-idle">
+        <button class="btn btn--primary btn--huge" type="button" data-action="start-camera">
+          <svg aria-hidden="true" viewBox="0 0 24 24" class="ico ico--lg"><path d="M3 7V4h3M21 7V4h-3M3 17v3h3M21 17v3h-3M7 8v8M10 8v8M13 8v8M16 8v8"/></svg>
+          Escanear
+        </button>
+
+        <div class="alert" id="camera-error" role="alert" hidden>
+          <strong id="camera-error-title">No se pudo usar la cámara</strong>
+          <p id="camera-error-text"></p>
+          <p class="alert__help" id="camera-error-help"></p>
+        </div>
+
+        <div class="btn-col">
+          <button class="btn btn--large" type="button" data-action="manual-code">Escribir el código</button>
+          <button class="btn btn--large" type="button" data-action="no-code">Producto sin código</button>
+        </div>
+
+        <fieldset class="settings">
+          <legend>Opciones de escaneo</legend>
+          <label class="switch">
+            <input type="checkbox" id="opt-fast">
+            <span class="switch__track" aria-hidden="true"></span>
+            <span class="switch__text">
+              <strong>Modo rápido</strong>
+              <small>Cada escaneo de un producto conocido suma +1 sin abrir la ficha.</small>
+            </span>
+          </label>
+          <label class="switch">
+            <input type="checkbox" id="opt-sound">
+            <span class="switch__track" aria-hidden="true"></span>
+            <span class="switch__text">
+              <strong>Sonido</strong>
+              <small>Pitido al leer un código.</small>
+            </span>
+          </label>
+        </fieldset>
+      </div>
+
+      <!-- Estado: cámara abierta -->
+      <div class="scan-panel" id="scan-camera" hidden>
+        <div class="reader-wrap">
+          <div id="reader"></div>
+          <div class="reader-hint" id="reader-hint">Apunta al código de barras</div>
+        </div>
+        <div class="fast-feed" id="fast-feed" aria-live="polite" hidden></div>
+        <div class="btn-row">
+          <button class="btn btn--large" type="button" data-action="manual-code">Escribir código</button>
+          <button class="btn btn--large btn--ghost" type="button" data-action="stop-camera">Cerrar cámara</button>
+        </div>
+      </div>
+
+      <!-- Estado: ficha del producto -->
+      <form class="scan-panel ficha" id="scan-form" novalidate hidden>
+        <div class="ficha__code">
+          <span class="ficha__code-label">Código</span>
+          <span class="ficha__code-value" id="f-code"></span>
+          <span class="tag" id="f-tag"></span>
+        </div>
+        <p class="note" id="f-existing" hidden></p>
+
+        <label class="field">
+          <span class="field__label">Nombre del producto</span>
+          <input class="input input--upper" id="f-name" name="name" type="text" autocomplete="off"
+                 autocapitalize="characters" spellcheck="false" enterkeyhint="next" maxlength="120" required>
+          <span class="field__error" id="f-name-err"></span>
+        </label>
+
+        <div class="field">
+          <label class="field__label" for="f-qty">Cantidad</label>
+          <div class="stepper">
+            <button class="btn btn--step" type="button" data-step="-1" aria-label="Restar uno">−</button>
+            <input class="input input--qty" id="f-qty" name="qty" type="text" inputmode="numeric" pattern="[0-9]*"
+                   autocomplete="off" enterkeyhint="next" required>
+            <button class="btn btn--step" type="button" data-step="1" aria-label="Sumar uno">+</button>
+          </div>
+          <span class="field__error" id="f-qty-err"></span>
+        </div>
+
+        <label class="field">
+          <span class="field__label">Precio unitario (CLP)</span>
+          <div class="money">
+            <span class="money__sign" aria-hidden="true">$</span>
+            <input class="input" id="f-price" name="price" type="text" inputmode="numeric" pattern="[0-9]*"
+                   autocomplete="off" enterkeyhint="done" required>
+          </div>
+          <span class="field__error" id="f-price-err"></span>
+        </label>
+
+        <p class="subtotal">Subtotal: <strong id="f-subtotal">$0</strong></p>
+
+        <div class="btn-row btn-row--sticky">
+          <button class="btn btn--large btn--ghost" type="button" data-action="cancel-form">Cancelar</button>
+          <button class="btn btn--large btn--primary" type="submit">Guardar</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- ============ CATÁLOGO ============ -->
+    <section class="view" id="view-catalogo" data-view="catalogo" aria-labelledby="t-catalogo" hidden>
+      <div class="view-head">
+        <h2 id="t-catalogo">Catálogo <small id="catalog-count"></small></h2>
+        <label class="btn btn--small">
+          Importar Excel
+          <input type="file" id="catalog-file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden>
+        </label>
+      </div>
+      <p class="hint">Los productos se agregan solos al escanearlos. Aquí puedes corregir nombres y precios.</p>
+      <label class="search">
+        <span class="sr-only">Buscar en el catálogo</span>
+        <input type="search" id="catalog-search" placeholder="Buscar por nombre o código" autocomplete="off" enterkeyhint="search">
+      </label>
+      <ul class="cards" id="catalog-items"></ul>
+      <p class="empty" id="catalog-empty">El catálogo está vacío.</p>
+    </section>
+
+    <!-- ============ EXPORTACIONES ============ -->
+    <section class="view" id="view-exportaciones" data-view="exportaciones" aria-labelledby="t-export" hidden>
+      <div class="view-head">
+        <h2 id="t-export">Exportaciones</h2>
+      </div>
+      <button class="btn btn--primary btn--xl btn--block" type="button" data-action="export">
+        <svg aria-hidden="true" viewBox="0 0 24 24" class="ico"><path d="M12 3v12M7 10l5 5 5-5M4 21h16"/></svg>
+        Exportar Excel
+      </button>
+      <p class="hint" id="export-summary"></p>
+      <p class="hint" id="storage-status"></p>
+
+      <h3 class="subhead">Historial</h3>
+      <ul class="cards" id="export-items"></ul>
+      <p class="empty" id="export-empty">Todavía no hay exportaciones.</p>
+    </section>
+  </main>
+
+  <nav class="tabbar" aria-label="Secciones">
+    <a class="tab" href="#lista" data-tab="lista">
+      <svg aria-hidden="true" viewBox="0 0 24 24" class="ico"><path d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01"/></svg>
+      <span>Lista</span>
+    </a>
+    <a class="tab" href="#escanear" data-tab="escanear">
+      <svg aria-hidden="true" viewBox="0 0 24 24" class="ico"><path d="M3 7V4h3M21 7V4h-3M3 17v3h3M21 17v3h-3M7 8v8M10 8v8M13 8v8M16 8v8"/></svg>
+      <span>Escanear</span>
+    </a>
+    <a class="tab" href="#catalogo" data-tab="catalogo">
+      <svg aria-hidden="true" viewBox="0 0 24 24" class="ico"><path d="M4 5h16v14H4zM4 9h16M9 9v10"/></svg>
+      <span>Catálogo</span>
+    </a>
+    <a class="tab" href="#exportaciones" data-tab="exportaciones">
+      <svg aria-hidden="true" viewBox="0 0 24 24" class="ico"><path d="M12 3v12M7 10l5 5 5-5M4 21h16"/></svg>
+      <span>Exportar</span>
+      <span class="tab__badge" id="tab-badge" hidden></span>
+    </a>
+  </nav>
+
+  <!-- Modal genérico -->
+  <div class="modal" id="modal" hidden>
+    <div class="modal__backdrop" data-modal-dismiss></div>
+    <div class="modal__sheet" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <h2 class="modal__title" id="modal-title"></h2>
+      <form class="modal__body" id="modal-body" novalidate></form>
+      <div class="modal__buttons" id="modal-buttons"></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+  <noscript><p class="empty">Esta aplicación necesita JavaScript.</p></noscript>
+</body>
+</html>
